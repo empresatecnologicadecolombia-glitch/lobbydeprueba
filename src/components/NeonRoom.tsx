@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Html, PointerLockControls, Stars } from "@react-three/drei";
+import { PointerLockControls, Stars, useVideoTexture } from "@react-three/drei";
 import { Maximize2, Minimize2 } from "lucide-react";
 import * as THREE from "three";
 
@@ -9,7 +9,6 @@ const WALL_HEIGHT = 8;
 const PLAYER_HEIGHT = 1.7;
 const PLAYER_RADIUS = 0.4;
 const MOVE_SPEED = 4.5;
-const BUBBLE_CONTENT_SCALE = 0.9;
 
 const WALL_COLOR = "#EAECEE";
 
@@ -137,43 +136,58 @@ function VideoWall({
   position,
   rotation,
   muted = true,
-  showControls = false,
 }: {
   position: [number, number, number];
   rotation: [number, number, number];
   muted?: boolean;
-  showControls?: boolean;
 }) {
+  const videoTexture = useVideoTexture("/beele-casaparlante.mp4", {
+    muted,
+    loop: true,
+    playsInline: true,
+    crossOrigin: "anonymous",
+    start: true,
+  });
+
+  useEffect(() => {
+    videoTexture.colorSpace = THREE.SRGBColorSpace;
+    videoTexture.minFilter = THREE.LinearFilter;
+    videoTexture.magFilter = THREE.LinearFilter;
+    videoTexture.generateMipmaps = false;
+    videoTexture.wrapS = THREE.ClampToEdgeWrapping;
+    videoTexture.wrapT = THREE.ClampToEdgeWrapping;
+  }, [videoTexture]);
+
+  useEffect(() => {
+    const videoEl = videoTexture.image;
+    if (!(videoEl instanceof HTMLVideoElement)) return;
+
+    videoEl.muted = muted;
+    videoEl.volume = muted ? 0 : 1;
+
+    if (muted) return;
+
+    const tryPlay = () => {
+      videoEl.play().catch(() => {
+        // On some browsers, audio starts after first gesture.
+      });
+    };
+
+    tryPlay();
+    window.addEventListener("pointerdown", tryPlay, { passive: true });
+    window.addEventListener("keydown", tryPlay);
+    return () => {
+      window.removeEventListener("pointerdown", tryPlay);
+      window.removeEventListener("keydown", tryPlay);
+    };
+  }, [videoTexture, muted]);
+
   return (
     <group position={position} rotation={rotation}>
-      <Html transform position={[0, 0, 0.02]} scale={0.4} zIndexRange={[10000, 0]}>
-        <div
-          style={{
-            width: "2000px",
-            height: "800px",
-            overflow: "hidden",
-            background: "black",
-            pointerEvents: "auto",
-          }}
-        >
-          <video
-            src="/beele-casaparlante.mp4"
-            width={2000}
-            height={800}
-            controls={showControls}
-            autoPlay
-            loop
-            muted={muted}
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-              border: "0",
-              display: "block",
-            }}
-          />
-        </div>
-      </Html>
+      <mesh>
+        <planeGeometry args={[8, 4.5]} />
+        <meshBasicMaterial map={videoTexture} toneMapped={false} color="#ffffff" />
+      </mesh>
     </group>
   );
 }
@@ -185,10 +199,7 @@ function WallVideoScreens() {
 
   return (
     <>
-      <VideoWall position={[0, y, -half + off]} rotation={[0, 0, 0]} muted={false} showControls />
-      <VideoWall position={[0, y, half - off]} rotation={[0, Math.PI, 0]} muted />
-      <VideoWall position={[-half + off, y, 0]} rotation={[0, Math.PI / 2, 0]} muted />
-      <VideoWall position={[half - off, y, 0]} rotation={[0, -Math.PI / 2, 0]} muted />
+      <VideoWall position={[0, y, -half + off]} rotation={[0, 0, 0]} muted={false} />
     </>
   );
 }
@@ -422,12 +433,19 @@ function FirstPersonController() {
   const keys = useRef<Record<string, boolean>>({});
   const velocity = useRef(new THREE.Vector3());
   const direction = useRef(new THREE.Vector3());
+  const touchLookId = useRef<number | null>(null);
+  const touchMoveId = useRef<number | null>(null);
+  const lastLook = useRef({ x: 0, y: 0 });
+  const moveOrigin = useRef({ x: 0, y: 0 });
+  const touchMoveVec = useRef({ x: 0, y: 0 });
+  const isCoarse = useRef(false);
 
   useEffect(() => {
     camera.position.set(0, PLAYER_HEIGHT, 4);
   }, [camera]);
 
   useEffect(() => {
+    isCoarse.current = window.matchMedia("(pointer: coarse)").matches;
     const down = (e: KeyboardEvent) => (keys.current[e.code] = true);
     const up = (e: KeyboardEvent) => (keys.current[e.code] = false);
     window.addEventListener("keydown", down);
@@ -438,10 +456,77 @@ function FirstPersonController() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isCoarse.current) return;
+    const LOOK_SENS = 0.0032;
+    const MOVE_RADIUS = 82;
+
+    const onTouchStart = (e: TouchEvent) => {
+      for (const t of Array.from(e.changedTouches)) {
+        if (t.clientX > window.innerWidth * 0.5 && touchLookId.current === null) {
+          touchLookId.current = t.identifier;
+          lastLook.current = { x: t.clientX, y: t.clientY };
+        } else if (t.clientX <= window.innerWidth * 0.5 && touchMoveId.current === null) {
+          touchMoveId.current = t.identifier;
+          moveOrigin.current = { x: t.clientX, y: t.clientY };
+          touchMoveVec.current = { x: 0, y: 0 };
+        }
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      for (const t of Array.from(e.changedTouches)) {
+        if (t.identifier === touchLookId.current) {
+          const dx = t.clientX - lastLook.current.x;
+          const dy = t.clientY - lastLook.current.y;
+          lastLook.current = { x: t.clientX, y: t.clientY };
+          camera.rotation.y -= dx * LOOK_SENS;
+          camera.rotation.x = THREE.MathUtils.clamp(
+            camera.rotation.x - dy * LOOK_SENS,
+            -Math.PI / 2 + 0.05,
+            Math.PI / 2 - 0.05,
+          );
+        }
+        if (t.identifier === touchMoveId.current) {
+          const dx = t.clientX - moveOrigin.current.x;
+          const dy = t.clientY - moveOrigin.current.y;
+          touchMoveVec.current = {
+            x: THREE.MathUtils.clamp(dx / MOVE_RADIUS, -1, 1),
+            y: THREE.MathUtils.clamp(dy / MOVE_RADIUS, -1, 1),
+          };
+        }
+      }
+      e.preventDefault();
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      for (const t of Array.from(e.changedTouches)) {
+        if (t.identifier === touchLookId.current) touchLookId.current = null;
+        if (t.identifier === touchMoveId.current) {
+          touchMoveId.current = null;
+          touchMoveVec.current = { x: 0, y: 0 };
+        }
+      }
+    };
+
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: false });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    window.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, [camera]);
+
   useFrame((_, delta) => {
     const k = keys.current;
-    const forward = (k["KeyW"] ? 1 : 0) - (k["KeyS"] ? 1 : 0);
-    const strafe = (k["KeyD"] ? 1 : 0) - (k["KeyA"] ? 1 : 0);
+    const keyForward = (k["KeyW"] ? 1 : 0) - (k["KeyS"] ? 1 : 0);
+    const keyStrafe = (k["KeyD"] ? 1 : 0) - (k["KeyA"] ? 1 : 0);
+    const forward = THREE.MathUtils.clamp(keyForward - touchMoveVec.current.y, -1, 1);
+    const strafe = THREE.MathUtils.clamp(keyStrafe + touchMoveVec.current.x, -1, 1);
 
     direction.current.set(-strafe, 0, forward).normalize();
     const yaw = new THREE.Euler(0, camera.rotation.y, 0, "YXZ");
@@ -463,8 +548,10 @@ function FirstPersonController() {
 }
 
 export default function NeonRoom() {
-  const [locked, setLocked] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const sourceHostRef = useRef<HTMLDivElement>(null);
+  const leftEyeRef = useRef<HTMLCanvasElement>(null);
+  const rightEyeRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     const syncFullscreenState = () => {
@@ -476,6 +563,20 @@ export default function NeonRoom() {
     return () => {
       document.removeEventListener("fullscreenchange", syncFullscreenState);
     };
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const pressedM = e.code === "KeyM" || e.key === "m" || e.key === "M";
+      if (!pressedM) return;
+
+      if (document.pointerLockElement) {
+        document.exitPointerLock();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
   const toggleFullscreen = async () => {
@@ -491,8 +592,113 @@ export default function NeonRoom() {
     }
   };
 
+  useEffect(() => {
+    const sourceCanvas = sourceHostRef.current?.querySelector("canvas");
+    if (!sourceCanvas) return;
+
+    const drawToEye = (target: HTMLCanvasElement | null) => {
+      if (!target) return;
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.floor(target.clientWidth * dpr));
+      const height = Math.max(1, Math.floor(target.clientHeight * dpr));
+
+      if (target.width !== width || target.height !== height) {
+        target.width = width;
+        target.height = height;
+      }
+
+      const ctx = target.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(sourceCanvas, 0, 0, sourceCanvas.width, sourceCanvas.height, 0, 0, width, height);
+    };
+
+    let rafId = 0;
+    const tick = () => {
+      drawToEye(leftEyeRef.current);
+      drawToEye(rightEyeRef.current);
+      rafId = requestAnimationFrame(tick);
+    };
+
+    tick();
+    return () => cancelAnimationFrame(rafId);
+  }, []);
+
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-black">
+      {/* Single render source (hidden) */}
+      <div ref={sourceHostRef} className="absolute inset-0 opacity-0">
+        <Canvas
+          camera={{ fov: 75, near: 0.1, far: 200, position: [0, PLAYER_HEIGHT, 4] }}
+          gl={{ antialias: true }}
+        >
+          <color attach="background" args={["#050510"]} />
+
+          <Stars
+            radius={80}
+            depth={50}
+            count={4000}
+            factor={4}
+            saturation={0}
+            fade
+            speed={0.5}
+          />
+
+          <ambientLight intensity={0.55} />
+          <directionalLight position={[5, 8, 5]} intensity={0.4} color="#ffffff" />
+
+          <Room />
+          <HoloScreens />
+          <WallVideoScreens />
+          <NeonAccents />
+          <LoungeSet />
+          <LoungeSpotlight />
+
+          <EarthMoonAnchor />
+          <FirstPersonController />
+
+          <PointerLockControls />
+        </Canvas>
+      </div>
+
+      {/* Mirrored output for both eyes, each with full bubble */}
+      <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1 bg-black px-[6%]">
+        <div className="relative h-full w-full max-w-[44%] overflow-hidden">
+          <canvas
+            ref={leftEyeRef}
+            className="h-full w-full"
+            style={{ filter: "url(#global-bubble)", transform: "scale(1.04)" }}
+          />
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background: "#000",
+              WebkitMaskImage:
+                "radial-gradient(ellipse 56% 60% at 50% 50%, transparent 58%, rgba(0,0,0,0.9) 74%, black 100%)",
+              maskImage:
+                "radial-gradient(ellipse 56% 60% at 50% 50%, transparent 58%, rgba(0,0,0,0.9) 74%, black 100%)",
+            }}
+          />
+        </div>
+        <div className="relative h-full w-full max-w-[44%] overflow-hidden">
+          <canvas
+            ref={rightEyeRef}
+            className="h-full w-full"
+            style={{ filter: "url(#global-bubble)", transform: "scale(1.04)" }}
+          />
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background: "#000",
+              WebkitMaskImage:
+                "radial-gradient(ellipse 56% 60% at 50% 50%, transparent 58%, rgba(0,0,0,0.9) 74%, black 100%)",
+              maskImage:
+                "radial-gradient(ellipse 56% 60% at 50% 50%, transparent 58%, rgba(0,0,0,0.9) 74%, black 100%)",
+            }}
+          />
+        </div>
+      </div>
+
       <svg aria-hidden="true" className="pointer-events-none absolute h-0 w-0" focusable="false">
         <filter id="global-bubble" x="-15%" y="-15%" width="130%" height="130%">
           <feTurbulence
@@ -512,90 +718,16 @@ export default function NeonRoom() {
         </filter>
       </svg>
 
-      <div className="absolute inset-0" style={{ filter: "url(#global-bubble)" }}>
-        <div
-          className="absolute inset-0"
-          style={{
-            transform: `scale(${BUBBLE_CONTENT_SCALE})`,
-            transformOrigin: "center center",
-          }}
-        >
-          <Canvas
-            camera={{ fov: 75, near: 0.1, far: 200, position: [0, PLAYER_HEIGHT, 4] }}
-            gl={{ antialias: true }}
-          >
-            <color attach="background" args={["#050510"]} />
+      <button
+        type="button"
+        onClick={toggleFullscreen}
+        className="group absolute right-5 top-5 z-50 inline-flex items-center gap-2 rounded-xl border border-cyan-300/40 bg-slate-950/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-cyan-200 shadow-[0_0_25px_rgba(34,211,238,0.22)] backdrop-blur-md transition-all duration-300 hover:border-cyan-200 hover:text-cyan-100 hover:shadow-[0_0_30px_rgba(34,211,238,0.4)]"
+        aria-label={isFullscreen ? "Salir de pantalla completa" : "Entrar en pantalla completa"}
+      >
+        {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+        <span>{isFullscreen ? "Exit Fullscreen" : "Full Screen"}</span>
+      </button>
 
-          {/* Background stars (still visible through the holographic window) */}
-          <Stars
-            radius={80}
-            depth={50}
-            count={4000}
-            factor={4}
-            saturation={0}
-            fade
-            speed={0.5}
-          />
-
-          {/* Soft fill so pearly walls read clean */}
-          <ambientLight intensity={0.55} />
-          {/* Subtle directional fill for depth on the white walls */}
-          <directionalLight position={[5, 8, 5]} intensity={0.4} color="#ffffff" />
-
-          <Room />
-          <HoloScreens />
-          <WallVideoScreens />
-          <NeonAccents />
-          <LoungeSet />
-          <LoungeSpotlight />
-
-        <EarthMoonAnchor />
-        <FirstPersonController />
-
-        <PointerLockControls
-          onLock={() => setLocked(true)}
-          onUnlock={() => setLocked(false)}
-        />
-        </Canvas>
-
-        {!locked && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <div className="pointer-events-auto rounded-2xl border border-white/10 bg-black/70 px-8 py-6 text-center backdrop-blur-md">
-              <h1 className="text-2xl font-bold tracking-tight text-white">Pearl Room</h1>
-              <p className="mt-2 text-sm text-white/70">
-                Click anywhere to enter · <span className="font-mono">WASD</span> to move ·
-                Mouse to look · <span className="font-mono">ESC</span> to exit
-              </p>
-            </div>
-          </div>
-        )}
-
-        {locked && (
-          <div className="pointer-events-none absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/80 mix-blend-difference" />
-        )}
-
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            className="group absolute right-5 top-5 z-50 inline-flex items-center gap-2 rounded-xl border border-cyan-300/40 bg-slate-950/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-cyan-200 shadow-[0_0_25px_rgba(34,211,238,0.22)] backdrop-blur-md transition-all duration-300 hover:border-cyan-200 hover:text-cyan-100 hover:shadow-[0_0_30px_rgba(34,211,238,0.4)]"
-            aria-label={isFullscreen ? "Salir de pantalla completa" : "Entrar en pantalla completa"}
-          >
-            {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-            <span>{isFullscreen ? "Exit Fullscreen" : "Full Screen"}</span>
-          </button>
-        </div>
-      </div>
-
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background: "#000",
-          WebkitMaskImage:
-            "radial-gradient(ellipse 54% 58% at 50% 50%, transparent 58%, rgba(0,0,0,0.9) 74%, black 100%)",
-          maskImage:
-            "radial-gradient(ellipse 54% 58% at 50% 50%, transparent 58%, rgba(0,0,0,0.9) 74%, black 100%)",
-        }}
-      />
     </div>
   );
 }
