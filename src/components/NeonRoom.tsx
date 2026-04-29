@@ -9,6 +9,7 @@ const WALL_HEIGHT = 8;
 const PLAYER_HEIGHT = 1.7;
 const PLAYER_RADIUS = 0.4;
 const MOVE_SPEED = 4.5;
+const BUBBLE_CONTENT_SCALE = 0.9;
 
 const WALL_COLOR = "#EAECEE";
 
@@ -491,12 +492,39 @@ export default function NeonRoom() {
   };
 
   return (
-    <div className="relative h-screen w-screen bg-black">
-      <Canvas
-        camera={{ fov: 75, near: 0.1, far: 200, position: [0, PLAYER_HEIGHT, 4] }}
-        gl={{ antialias: true }}
-      >
-          <color attach="background" args={["#050510"]} />
+    <div className="relative h-screen w-screen overflow-hidden bg-black">
+      <svg aria-hidden="true" className="pointer-events-none absolute h-0 w-0" focusable="false">
+        <filter id="global-bubble" x="-15%" y="-15%" width="130%" height="130%">
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="0.0035 0.0035"
+            numOctaves="1"
+            seed="11"
+            result="noise"
+          />
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="noise"
+            scale="34"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+      </svg>
+
+      <div className="absolute inset-0" style={{ filter: "url(#global-bubble)" }}>
+        <div
+          className="absolute inset-0"
+          style={{
+            transform: `scale(${BUBBLE_CONTENT_SCALE})`,
+            transformOrigin: "center center",
+          }}
+        >
+          <Canvas
+            camera={{ fov: 75, near: 0.1, far: 200, position: [0, PLAYER_HEIGHT, 4] }}
+            gl={{ antialias: true }}
+          >
+            <color attach="background" args={["#050510"]} />
 
           {/* Background stars (still visible through the holographic window) */}
           <Stars
@@ -528,33 +556,46 @@ export default function NeonRoom() {
           onLock={() => setLocked(true)}
           onUnlock={() => setLocked(false)}
         />
-      </Canvas>
+        </Canvas>
 
-      {!locked && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="pointer-events-auto rounded-2xl border border-white/10 bg-black/70 px-8 py-6 text-center backdrop-blur-md">
-            <h1 className="text-2xl font-bold tracking-tight text-white">Pearl Room</h1>
-            <p className="mt-2 text-sm text-white/70">
-              Click anywhere to enter · <span className="font-mono">WASD</span> to move ·
-              Mouse to look · <span className="font-mono">ESC</span> to exit
-            </p>
+        {!locked && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="pointer-events-auto rounded-2xl border border-white/10 bg-black/70 px-8 py-6 text-center backdrop-blur-md">
+              <h1 className="text-2xl font-bold tracking-tight text-white">Pearl Room</h1>
+              <p className="mt-2 text-sm text-white/70">
+                Click anywhere to enter · <span className="font-mono">WASD</span> to move ·
+                Mouse to look · <span className="font-mono">ESC</span> to exit
+              </p>
+            </div>
           </div>
+        )}
+
+        {locked && (
+          <div className="pointer-events-none absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/80 mix-blend-difference" />
+        )}
+
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className="group absolute right-5 top-5 z-50 inline-flex items-center gap-2 rounded-xl border border-cyan-300/40 bg-slate-950/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-cyan-200 shadow-[0_0_25px_rgba(34,211,238,0.22)] backdrop-blur-md transition-all duration-300 hover:border-cyan-200 hover:text-cyan-100 hover:shadow-[0_0_30px_rgba(34,211,238,0.4)]"
+            aria-label={isFullscreen ? "Salir de pantalla completa" : "Entrar en pantalla completa"}
+          >
+            {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            <span>{isFullscreen ? "Exit Fullscreen" : "Full Screen"}</span>
+          </button>
         </div>
-      )}
+      </div>
 
-      {locked && (
-        <div className="pointer-events-none absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/80 mix-blend-difference" />
-      )}
-
-      <button
-        type="button"
-        onClick={toggleFullscreen}
-        className="group absolute right-5 top-5 z-50 inline-flex items-center gap-2 rounded-xl border border-cyan-300/40 bg-slate-950/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-cyan-200 shadow-[0_0_25px_rgba(34,211,238,0.22)] backdrop-blur-md transition-all duration-300 hover:border-cyan-200 hover:text-cyan-100 hover:shadow-[0_0_30px_rgba(34,211,238,0.4)]"
-        aria-label={isFullscreen ? "Salir de pantalla completa" : "Entrar en pantalla completa"}
-      >
-        {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-        <span>{isFullscreen ? "Exit Fullscreen" : "Full Screen"}</span>
-      </button>
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background: "#000",
+          WebkitMaskImage:
+            "radial-gradient(ellipse 54% 58% at 50% 50%, transparent 58%, rgba(0,0,0,0.9) 74%, black 100%)",
+          maskImage:
+            "radial-gradient(ellipse 54% 58% at 50% 50%, transparent 58%, rgba(0,0,0,0.9) 74%, black 100%)",
+        }}
+      />
     </div>
   );
 }
